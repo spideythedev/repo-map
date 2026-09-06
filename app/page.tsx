@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Folder,
-  Github,
+  GithubIcon,
   GitBranch,
   Loader2,
   Search,
@@ -41,11 +41,15 @@ function parseRepoUrl(value: string) {
   try {
     const url = new URL(value.trim());
 
-    if (url.hostname !== "github.com") return null;
+    if (url.hostname !== "github.com") {
+      return null;
+    }
 
     const parts = url.pathname.split("/").filter(Boolean);
 
-    if (parts.length < 2) return null;
+    if (parts.length < 2) {
+      return null;
+    }
 
     return {
       owner: parts[0],
@@ -56,7 +60,7 @@ function parseRepoUrl(value: string) {
   }
 }
 
-function buildMap(files: RepoFile[], repoName: string) {
+function buildMap(files: RepoFile[], repoName: string): MapNode[] {
   const nodes: MapNode[] = [
     {
       id: "root",
@@ -77,22 +81,18 @@ function buildMap(files: RepoFile[], repoName: string) {
     let parent = "root";
     let depth = 0;
 
-    for (let i = 0; i < parts.length - 1; i++) {
-      const folderPath = parts.slice(0, i + 1).join("/");
+    for (let index = 0; index < parts.length - 1; index++) {
+      const folderPath = parts.slice(0, index + 1).join("/");
 
       if (!folders.has(folderPath)) {
-        const angle =
-          (folders.size / Math.max(1, Math.min(12, visibleFiles.length))) *
-          Math.PI *
-          2;
-
-        const radius = 170 + depth * 90;
-
+        const folderIndex = folders.size;
+        const angle = (folderIndex / Math.max(1, 12)) * Math.PI * 2;
+        const radius = 170 + depth * 80;
         const id = `folder:${folderPath}`;
 
         nodes.push({
           id,
-          label: parts[i],
+          label: parts[index],
           path: folderPath,
           type: "folder",
           x: 600 + Math.cos(angle) * radius,
@@ -107,9 +107,8 @@ function buildMap(files: RepoFile[], repoName: string) {
       depth++;
     }
 
-    const angle =
-      (nodes.length / Math.max(1, visibleFiles.length)) * Math.PI * 2;
-
+    const fileIndex = nodes.length;
+    const angle = (fileIndex / Math.max(1, visibleFiles.length)) * Math.PI * 2;
     const radius = 310;
 
     nodes.push({
@@ -133,10 +132,10 @@ export default function Home() {
   const [error, setError] = useState("");
   const [zoom, setZoom] = useState(1);
   const [active, setActive] = useState<string | null>(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   const dragging = useRef(false);
   const lastPoint = useRef({ x: 0, y: 0 });
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   const nodes = useMemo(
     () => (repo ? buildMap(repo.files, repo.name) : []),
@@ -156,15 +155,15 @@ export default function Home() {
     setRepo(null);
 
     try {
-      const response = await fetch(
+      const repositoryResponse = await fetch(
         `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`
       );
 
-      if (!response.ok) {
+      if (!repositoryResponse.ok) {
         throw new Error("Repository not found or unavailable.");
       }
 
-      const repository = await response.json();
+      const repository = await repositoryResponse.json();
 
       const treeResponse = await fetch(
         `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${repository.default_branch}?recursive=1`
@@ -176,17 +175,23 @@ export default function Home() {
 
       const tree = await treeResponse.json();
 
+      if (tree.truncated) {
+        console.warn("GitHub returned a truncated repository tree.");
+      }
+
+      const files: RepoFile[] = tree.tree
+        .filter((item: RepoFile) => item.path)
+        .map((item: RepoFile) => ({
+          path: item.path,
+          type: item.type
+        }));
+
       setRepo({
         name: repository.name,
         full_name: repository.full_name,
         description: repository.description,
         default_branch: repository.default_branch,
-        files: tree.tree
-          .filter((item: RepoFile) => item.path)
-          .map((item: RepoFile) => ({
-            path: item.path,
-            type: item.type
-          }))
+        files
       });
 
       setZoom(1);
@@ -216,6 +221,7 @@ export default function Home() {
 
   function startDrag(event: React.PointerEvent<SVGSVGElement>) {
     dragging.current = true;
+
     lastPoint.current = {
       x: event.clientX,
       y: event.clientY
@@ -225,7 +231,9 @@ export default function Home() {
   }
 
   function drag(event: React.PointerEvent<SVGSVGElement>) {
-    if (!dragging.current) return;
+    if (!dragging.current) {
+      return;
+    }
 
     const dx = event.clientX - lastPoint.current.x;
     const dy = event.clientY - lastPoint.current.y;
@@ -252,6 +260,7 @@ export default function Home() {
           <div className="brand-mark">
             <GitBranch size={17} />
           </div>
+
           <span>RepoMap</span>
         </div>
 
@@ -261,7 +270,7 @@ export default function Home() {
           target="_blank"
           rel="noreferrer"
         >
-          <Github size={17} />
+          <GithubIcon size={17} />
           GitHub
         </a>
       </header>
@@ -289,16 +298,26 @@ export default function Home() {
 
             <input
               value={url}
-              onChange={(event) => setUrl(event.target.value)}
+              onChange={(event) => {
+                setUrl(event.target.value);
+                setError("");
+              }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") analyzeRepository();
+                if (event.key === "Enter" && !loading) {
+                  analyzeRepository();
+                }
               }}
               placeholder="https://github.com/owner/repository"
               aria-label="GitHub repository URL"
+              autoComplete="off"
             />
 
             {url && (
-              <button className="clear-button" onClick={clear}>
+              <button
+                className="clear-button"
+                onClick={clear}
+                aria-label="Clear repository URL"
+              >
                 <X size={16} />
               </button>
             )}
@@ -336,6 +355,7 @@ export default function Home() {
           <div className="workspace-header">
             <div>
               <div className="repo-path">{repo.full_name}</div>
+
               <h2>{repo.name}</h2>
 
               {repo.description && <p>{repo.description}</p>}
@@ -383,7 +403,8 @@ export default function Home() {
               onPointerMove={drag}
               onPointerUp={stopDrag}
               onPointerCancel={stopDrag}
-              style={{ cursor: dragging.current ? "grabbing" : "grab" }}
+              role="img"
+              aria-label={`Interactive map of ${repo.full_name}`}
             >
               <g
                 transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}
@@ -395,14 +416,16 @@ export default function Home() {
                       (item) => item.id === node.parent
                     );
 
-                    if (!parent) return null;
+                    if (!parent) {
+                      return null;
+                    }
 
                     const highlighted =
                       active === node.id || active === parent.id;
 
                     return (
                       <line
-                        key={`line-${node.id}`}
+                        key={`connection-${node.id}`}
                         x1={parent.x}
                         y1={parent.y}
                         x2={node.x}
@@ -444,7 +467,7 @@ export default function Home() {
                       {node.type === "root" && (
                         <GitBranch
                           x={node.x - 10}
-                          y={node.y - 28}
+                          y={node.y - 10}
                           size={20}
                         />
                       )}
