@@ -3,15 +3,15 @@
 import { useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
+  CodeXml,
   Folder,
-  GithubIcon,
   GitBranch,
   Loader2,
+  RotateCcw,
   Search,
   X,
   ZoomIn,
-  ZoomOut,
-  RotateCcw
+  ZoomOut
 } from "lucide-react";
 
 type RepoFile = {
@@ -77,9 +77,7 @@ function buildMap(files: RepoFile[], repoName: string): MapNode[] {
 
   for (const file of visibleFiles) {
     const parts = file.path.split("/");
-
     let parent = "root";
-    let depth = 0;
 
     for (let index = 0; index < parts.length - 1; index++) {
       const folderPath = parts.slice(0, index + 1).join("/");
@@ -87,7 +85,7 @@ function buildMap(files: RepoFile[], repoName: string): MapNode[] {
       if (!folders.has(folderPath)) {
         const folderIndex = folders.size;
         const angle = (folderIndex / Math.max(1, 12)) * Math.PI * 2;
-        const radius = 170 + depth * 80;
+        const radius = 170 + index * 80;
         const id = `folder:${folderPath}`;
 
         nodes.push({
@@ -104,11 +102,11 @@ function buildMap(files: RepoFile[], repoName: string): MapNode[] {
       }
 
       parent = folders.get(folderPath)!;
-      depth++;
     }
 
     const fileIndex = nodes.length;
-    const angle = (fileIndex / Math.max(1, visibleFiles.length)) * Math.PI * 2;
+    const angle =
+      (fileIndex / Math.max(1, visibleFiles.length)) * Math.PI * 2;
     const radius = 310;
 
     nodes.push({
@@ -174,10 +172,6 @@ export default function Home() {
       }
 
       const tree = await treeResponse.json();
-
-      if (tree.truncated) {
-        console.warn("GitHub returned a truncated repository tree.");
-      }
 
       const files: RepoFile[] = tree.tree
         .filter((item: RepoFile) => item.path)
@@ -270,7 +264,7 @@ export default function Home() {
           target="_blank"
           rel="noreferrer"
         >
-          <GithubIcon size={17} />
+          <CodeXml size={17} />
           GitHub
         </a>
       </header>
