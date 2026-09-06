@@ -1,329 +1,204 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import {
   ArrowRight,
+  BookOpen,
+  CircleAlert,
+  Clock3,
   CodeXml,
-  Folder,
   GitBranch,
+  GitFork,
   Loader2,
-  RotateCcw,
   Search,
-  X,
-  ZoomIn,
-  ZoomOut
+  Star,
+  Users,
+  X
 } from "lucide-react";
 
-type RepoFile = {
-  path: string;
-  type: string;
+import RepoMap from "./components/RepoMap";
+import DetailsPanel from "./components/DetailsPanel";
+
+type Analysis = {
+  analyzedSourceFiles: number;
+  truncatedTree: boolean;
+  folders: number;
+  fileCount: number;
+  frameworks: string[];
+  packageManager: string | null;
+  entryPoints: string[];
+  languages: {
+    language: string;
+    count: number;
+  }[];
+  largestFiles: {
+    path: string;
+    size: number;
+  }[];
+  hotspots: {
+    path: string;
+    connections: number;
+  }[];
 };
 
 type RepoData = {
-  name: string;
-  full_name: string;
-  description: string | null;
-  default_branch: string;
-  files: RepoFile[];
+  repository: {
+    name: string;
+    fullName: string;
+    url: string;
+    description: string | null;
+    defaultBranch: string;
+    stars: number;
+    forks: number;
+    issues: number;
+    watchers: number;
+    size: number;
+    language: string | null;
+    license: string | null;
+    topics: string[];
+    updatedAt: string;
+    pushedAt: string;
+    owner: string;
+  };
+  files: {
+    path: string;
+    size: number;
+    type: string;
+  }[];
+  relationships: {
+    from: string;
+    to: string;
+    type: "import";
+  }[];
+  analysis: Analysis;
 };
 
-type MapNode = {
-  id: string;
-  label: string;
-  path: string;
-  type: "root" | "folder" | "file";
-  x: number;
-  y: number;
-  parent?: string;
-};
-
-function parseRepoUrl(value: string) {
-  try {
-    const url = new URL(value.trim());
-
-    if (url.hostname !== "github.com") {
-      return null;
-    }
-
-    const parts = url.pathname.split("/").filter(Boolean);
-
-    if (parts.length < 2) {
-      return null;
-    }
-
-    return {
-      owner: parts[0],
-      repo: parts[1].replace(/\.git$/, "")
-    };
-  } catch {
-    return null;
-  }
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium"
+  }).format(new Date(value));
 }
 
-function buildMap(files: RepoFile[], repoName: string): MapNode[] {
-  const nodes: MapNode[] = [
-    {
-      id: "root",
-      label: repoName,
-      path: repoName,
-      type: "root",
-      x: 600,
-      y: 400
-    }
-  ];
-
-  const folders = new Map<string, string>();
-  const visibleFiles = files.slice(0, 120);
-
-  for (const file of visibleFiles) {
-    const parts = file.path.split("/");
-    let parent = "root";
-
-    for (let index = 0; index < parts.length - 1; index++) {
-      const folderPath = parts.slice(0, index + 1).join("/");
-
-      if (!folders.has(folderPath)) {
-        const folderIndex = folders.size;
-        const angle = (folderIndex / Math.max(1, 12)) * Math.PI * 2;
-        const radius = 170 + index * 80;
-        const id = `folder:${folderPath}`;
-
-        nodes.push({
-          id,
-          label: parts[index],
-          path: folderPath,
-          type: "folder",
-          x: 600 + Math.cos(angle) * radius,
-          y: 400 + Math.sin(angle) * radius,
-          parent
-        });
-
-        folders.set(folderPath, id);
-      }
-
-      parent = folders.get(folderPath)!;
-    }
-
-    const fileIndex = nodes.length;
-    const angle =
-      (fileIndex / Math.max(1, visibleFiles.length)) * Math.PI * 2;
-    const radius = 310;
-
-    nodes.push({
-      id: `file:${file.path}`,
-      label: parts.at(-1) || file.path,
-      path: file.path,
-      type: "file",
-      x: 600 + Math.cos(angle) * radius,
-      y: 400 + Math.sin(angle) * radius,
-      parent
-    });
-  }
-
-  return nodes;
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("en", {
+    notation: value >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: 1
+  }).format(value);
 }
 
 export default function Home() {
   const [url, setUrl] = useState("");
   const [repo, setRepo] = useState<RepoData | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [zoom, setZoom] = useState(1);
-  const [active, setActive] = useState<string | null>(null);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
 
-  const dragging = useRef(false);
-  const lastPoint = useRef({ x: 0, y: 0 });
+  async function analyze(event: FormEvent) {
+    event.preventDefault();
 
-  const nodes = useMemo(
-    () => (repo ? buildMap(repo.files, repo.name) : []),
-    [repo]
-  );
-
-  async function analyzeRepository() {
-    const parsed = parseRepoUrl(url);
-
-    if (!parsed) {
-      setError("Enter a valid public GitHub repository URL.");
-      return;
-    }
+    if (!url.trim()) return;
 
     setLoading(true);
     setError("");
     setRepo(null);
+    setSelected(null);
 
     try {
-      const repositoryResponse = await fetch(
-        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`
+      const response = await fetch(
+        `/api/analyze?url=${encodeURIComponent(url.trim())}`
       );
 
-      if (!repositoryResponse.ok) {
-        throw new Error("Repository not found or unavailable.");
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Analysis failed.");
       }
 
-      const repository = await repositoryResponse.json();
-
-      const treeResponse = await fetch(
-        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${repository.default_branch}?recursive=1`
-      );
-
-      if (!treeResponse.ok) {
-        throw new Error("Unable to read repository tree.");
-      }
-
-      const tree = await treeResponse.json();
-
-      const files: RepoFile[] = tree.tree
-        .filter((item: RepoFile) => item.path)
-        .map((item: RepoFile) => ({
-          path: item.path,
-          type: item.type
-        }));
-
-      setRepo({
-        name: repository.name,
-        full_name: repository.full_name,
-        description: repository.description,
-        default_branch: repository.default_branch,
-        files
-      });
-
-      setZoom(1);
-      setOffset({ x: 0, y: 0 });
+      setRepo(data);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Something went wrong while analyzing the repository."
+          : "Unable to analyze repository."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  function resetMap() {
-    setZoom(1);
-    setOffset({ x: 0, y: 0 });
-  }
+  const selectedRelationships = useMemo(
+    () => repo?.relationships ?? [],
+    [repo]
+  );
 
-  function clear() {
-    setUrl("");
-    setRepo(null);
-    setError("");
-    resetMap();
-  }
-
-  function startDrag(event: React.PointerEvent<SVGSVGElement>) {
-    dragging.current = true;
-
-    lastPoint.current = {
-      x: event.clientX,
-      y: event.clientY
-    };
-
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function drag(event: React.PointerEvent<SVGSVGElement>) {
-    if (!dragging.current) {
-      return;
-    }
-
-    const dx = event.clientX - lastPoint.current.x;
-    const dy = event.clientY - lastPoint.current.y;
-
-    lastPoint.current = {
-      x: event.clientX,
-      y: event.clientY
-    };
-
-    setOffset((current) => ({
-      x: current.x + dx,
-      y: current.y + dy
-    }));
-  }
-
-  function stopDrag() {
-    dragging.current = false;
-  }
-
-  return (
-    <main>
-      <header className="nav">
-        <div className="brand">
-          <div className="brand-mark">
-            <GitBranch size={17} />
+  if (!repo) {
+    return (
+      <main className="landing">
+        <nav className="nav">
+          <div className="brand">
+            <span className="brand-mark">
+              <CodeXml size={19} />
+            </span>
+            RepoMap
           </div>
 
-          <span>RepoMap</span>
-        </div>
+          <a
+            className="github-link"
+            href="https://github.com"
+            target="_blank"
+            rel="noreferrer"
+          >
+            GitHub
+          </a>
+        </nav>
 
-        <a
-          className="github-link"
-          href="https://github.com"
-          target="_blank"
-          rel="noreferrer"
-        >
-          <CodeXml size={17} />
-          GitHub
-        </a>
-      </header>
-
-      {!repo ? (
         <section className="hero">
           <div className="eyebrow">
-            <span />
+            <GitBranch size={14} />
             Repository intelligence
           </div>
 
           <h1>
             See how a
-            <br />
-            <em>codebase</em> connects.
+            <span> codebase connects.</span>
           </h1>
 
           <p className="hero-copy">
-            Paste a public GitHub repository and explore its structure as an
-            interactive visual map.
+            Explore repository structure, discover real import
+            relationships, and understand how the pieces of a
+            codebase fit together.
           </p>
 
-          <div className="search-box">
+          <form className="search-box" onSubmit={analyze}>
             <Search size={19} />
 
             <input
               value={url}
-              onChange={(event) => {
-                setUrl(event.target.value);
-                setError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !loading) {
-                  analyzeRepository();
-                }
-              }}
+              onChange={(event) => setUrl(event.target.value)}
               placeholder="https://github.com/owner/repository"
               aria-label="GitHub repository URL"
-              autoComplete="off"
             />
 
             {url && (
               <button
+                type="button"
                 className="clear-button"
-                onClick={clear}
+                onClick={() => setUrl("")}
                 aria-label="Clear repository URL"
               >
-                <X size={16} />
+                <X size={17} />
               </button>
             )}
 
             <button
               className="analyze-button"
-              onClick={analyzeRepository}
+              type="submit"
               disabled={loading}
             >
               {loading ? (
                 <>
-                  <Loader2 size={17} className="spin" />
+                  <Loader2 className="spin" size={17} />
                   Analyzing
                 </>
               ) : (
@@ -333,168 +208,290 @@ export default function Home() {
                 </>
               )}
             </button>
-          </div>
+          </form>
 
-          {error && <p className="error">{error}</p>}
+          {error && (
+            <div className="error">
+              <CircleAlert size={17} />
+              {error}
+            </div>
+          )}
 
           <div className="feature-row">
-            <span>Structure</span>
-            <span>Relationships</span>
-            <span>Architecture</span>
-            <span>Interactive map</span>
+            <span>Real repository data</span>
+            <span>Import analysis</span>
+            <span>Interactive graph</span>
+            <span>No repository upload</span>
           </div>
         </section>
-      ) : (
-        <section className="workspace">
-          <div className="workspace-header">
+      </main>
+    );
+  }
+
+  const { repository, analysis } = repo;
+
+  return (
+    <main className="workspace">
+      <header className="workspace-header">
+        <div className="workspace-brand">
+          <div className="brand">
+            <span className="brand-mark">
+              <CodeXml size={18} />
+            </span>
+            RepoMap
+          </div>
+
+          <div className="repo-path">
+            {repository.fullName}
+          </div>
+        </div>
+
+        <a
+          className="github-link"
+          href={repository.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          View on GitHub
+          <ArrowRight size={15} />
+        </a>
+      </header>
+
+      <section className="repo-summary">
+        <div>
+          <span className="eyebrow">
+            <GitBranch size={14} />
+            {repository.defaultBranch}
+          </span>
+
+          <h1>{repository.name}</h1>
+
+          <p>
+            {repository.description ||
+              "No repository description provided."}
+          </p>
+        </div>
+
+        <div className="repo-meta">
+          <span>
+            <Star size={15} />
+            {formatNumber(repository.stars)}
+          </span>
+
+          <span>
+            <GitFork size={15} />
+            {formatNumber(repository.forks)}
+          </span>
+
+          <span>
+            <Clock3 size={15} />
+            {formatDate(repository.updatedAt)}
+          </span>
+        </div>
+      </section>
+
+      <section className="stats-grid">
+        <div className="stat-card">
+          <span>
+            <CodeXml size={16} />
+            Files
+          </span>
+          <strong>{formatNumber(analysis.fileCount)}</strong>
+        </div>
+
+        <div className="stat-card">
+          <span>
+            <GitBranch size={16} />
+            Folders
+          </span>
+          <strong>{formatNumber(analysis.folders)}</strong>
+        </div>
+
+        <div className="stat-card">
+          <span>
+            <GitBranch size={16} />
+            Imports
+          </span>
+          <strong>{formatNumber(repo.relationships.length)}</strong>
+        </div>
+
+        <div className="stat-card">
+          <span>
+            <Users size={16} />
+            Issues
+          </span>
+          <strong>{formatNumber(repository.issues)}</strong>
+        </div>
+      </section>
+
+      <section className="analysis-grid">
+        <div className="analysis-card">
+          <div className="card-heading">
             <div>
-              <div className="repo-path">{repo.full_name}</div>
-
-              <h2>{repo.name}</h2>
-
-              {repo.description && <p>{repo.description}</p>}
+              <span className="card-label">Code intelligence</span>
+              <h2>Detected architecture</h2>
             </div>
-
-            <button className="new-analysis" onClick={clear}>
-              New analysis
-            </button>
           </div>
 
-          <div className="map-shell">
-            <div className="map-toolbar">
-              <button
-                onClick={() =>
-                  setZoom((value) => Math.min(2.5, value + 0.15))
-                }
-                aria-label="Zoom in"
-              >
-                <ZoomIn size={17} />
-              </button>
+          <div className="tag-list">
+            {analysis.frameworks.length ? (
+              analysis.frameworks.map((framework) => (
+                <span className="tag" key={framework}>
+                  {framework}
+                </span>
+              ))
+            ) : (
+              <span className="muted">
+                No framework detected
+              </span>
+            )}
 
-              <button
-                onClick={() =>
-                  setZoom((value) => Math.max(0.45, value - 0.15))
-                }
-                aria-label="Zoom out"
-              >
-                <ZoomOut size={17} />
-              </button>
+            {analysis.packageManager && (
+              <span className="tag">
+                {analysis.packageManager}
+              </span>
+            )}
 
-              <button onClick={resetMap} aria-label="Reset map">
-                <RotateCcw size={16} />
-              </button>
-            </div>
-
-            <div className="map-info">
-              <strong>{nodes.length}</strong>
-              <span>mapped nodes</span>
-            </div>
-
-            <svg
-              className="repo-map"
-              viewBox="0 0 1200 800"
-              onPointerDown={startDrag}
-              onPointerMove={drag}
-              onPointerUp={stopDrag}
-              onPointerCancel={stopDrag}
-              role="img"
-              aria-label={`Interactive map of ${repo.full_name}`}
-            >
-              <g
-                transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}
-              >
-                {nodes
-                  .filter((node) => node.parent)
-                  .map((node) => {
-                    const parent = nodes.find(
-                      (item) => item.id === node.parent
-                    );
-
-                    if (!parent) {
-                      return null;
-                    }
-
-                    const highlighted =
-                      active === node.id || active === parent.id;
-
-                    return (
-                      <line
-                        key={`connection-${node.id}`}
-                        x1={parent.x}
-                        y1={parent.y}
-                        x2={node.x}
-                        y2={node.y}
-                        className={`connection ${
-                          highlighted ? "connection-active" : ""
-                        }`}
-                      />
-                    );
-                  })}
-
-                {nodes.map((node, index) => {
-                  const isActive = active === node.id;
-
-                  return (
-                    <g
-                      key={node.id}
-                      className={`map-node node-${node.type} ${
-                        isActive ? "map-node-active" : ""
-                      }`}
-                      style={{
-                        animationDelay: `${Math.min(index * 18, 600)}ms`
-                      }}
-                      onPointerEnter={() => setActive(node.id)}
-                      onPointerLeave={() => setActive(null)}
-                    >
-                      <circle
-                        cx={node.x}
-                        cy={node.y}
-                        r={
-                          node.type === "root"
-                            ? 48
-                            : node.type === "folder"
-                              ? 28
-                              : 22
-                        }
-                      />
-
-                      {node.type === "root" && (
-                        <GitBranch
-                          x={node.x - 10}
-                          y={node.y - 10}
-                          size={20}
-                        />
-                      )}
-
-                      {node.type === "folder" && (
-                        <Folder
-                          x={node.x - 8}
-                          y={node.y - 8}
-                          size={16}
-                        />
-                      )}
-
-                      <text
-                        x={node.x}
-                        y={
-                          node.type === "root"
-                            ? node.y + 70
-                            : node.y + 43
-                        }
-                        textAnchor="middle"
-                      >
-                        {node.label.length > 25
-                          ? `${node.label.slice(0, 22)}...`
-                          : node.label}
-                      </text>
-                    </g>
-                  );
-                })}
-              </g>
-            </svg>
+            {repository.license && (
+              <span className="tag">
+                {repository.license}
+              </span>
+            )}
           </div>
-        </section>
-      )}
+        </div>
+
+        <div className="analysis-card">
+          <div className="card-heading">
+            <div>
+              <span className="card-label">Entry points</span>
+              <h2>Where execution begins</h2>
+            </div>
+          </div>
+
+          {analysis.entryPoints.length ? (
+            <div className="compact-list">
+              {analysis.entryPoints.map((entry) => (
+                <button
+                  key={entry}
+                  onClick={() => setSelected(entry)}
+                >
+                  {entry}
+                  <ArrowRight size={14} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">
+              No common entry point detected.
+            </p>
+          )}
+        </div>
+
+        <div className="analysis-card">
+          <div className="card-heading">
+            <div>
+              <span className="card-label">Dependency hotspots</span>
+              <h2>Most connected files</h2>
+            </div>
+          </div>
+
+          {analysis.hotspots.length ? (
+            <div className="compact-list">
+              {analysis.hotspots.map((hotspot) => (
+                <button
+                  key={hotspot.path}
+                  onClick={() => setSelected(hotspot.path)}
+                >
+                  <span>{hotspot.path}</span>
+                  <strong>{hotspot.connections}</strong>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">
+              No local dependency relationships detected.
+            </p>
+          )}
+        </div>
+
+        <div className="analysis-card">
+          <div className="card-heading">
+            <div>
+              <span className="card-label">Languages</span>
+              <h2>Repository composition</h2>
+            </div>
+          </div>
+
+          <div className="language-list">
+            {analysis.languages.slice(0, 6).map((item) => (
+              <div key={item.language}>
+                <span>{item.language}</span>
+                <strong>{item.count}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="map-section">
+        <div className="map-header">
+          <div>
+            <span className="card-label">Codebase map</span>
+            <h2>Repository relationships</h2>
+          </div>
+
+          <div className="map-search">
+            <Search size={16} />
+
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search files..."
+              aria-label="Search repository files"
+            />
+          </div>
+        </div>
+
+        {analysis.truncatedTree && (
+          <div className="analysis-warning">
+            <CircleAlert size={16} />
+            GitHub returned a truncated repository tree. The map
+            represents the files GitHub made available.
+          </div>
+        )}
+
+        <RepoMap
+          files={repo.files}
+          relationships={repo.relationships}
+          search={search}
+          onSelect={setSelected}
+        />
+      </section>
+
+      <section className="developer-grid">
+        <div className="analysis-card">
+          <BookOpen size={18} />
+          <h2>Analysis coverage</h2>
+          <p>
+            {analysis.analyzedSourceFiles} source files were
+            inspected for local import relationships.
+          </p>
+        </div>
+
+        <div className="analysis-card">
+          <Clock3 size={18} />
+          <h2>Last pushed</h2>
+          <p>{formatDate(repository.pushedAt)}</p>
+        </div>
+      </section>
+
+      <DetailsPanel
+        path={selected}
+        files={repo.files}
+        relationships={selectedRelationships}
+        repoUrl={repository.url}
+        onClose={() => setSelected(null)}
+      />
     </main>
   );
 }
